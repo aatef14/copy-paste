@@ -1,4 +1,15 @@
-for u in https://qisptestacr01.azurecr.io/v2/ https://qisptestacr01.qatarcentral.data.azurecr.io https://app-qispappfe-test-01.azurewebsites.net https://app-qispappbe-test-01.azurewebsites.net; do echo "$u $(curl -s -o /dev/null -w '%{http_code}' --max-time 10 $u)"; done
-
-
-curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 https://qispnpacr01.azurecr.io/v2/
+parameters:
+  - name: poolName
+    type: string
+  - name: baseServiceConnection
+    type: string
+  - name: baseAcrLoginServer
+    type: string
+  - name: trivyImage
+    type: string
+  - name: severity
+    type: string
+    default: 'CRITICAL,HIGH'
+  - name: exitCode
+    type: string
+    default: '0'
