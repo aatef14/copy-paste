@@ -1,69 +1,62 @@
-trigger: none
-
-pr: none
-
-name: 'Trivy-Test-$(Build.BuildId)'
-
 parameters:
-  - name: testImage
-    displayName: 'Existing image in dev ACR to scan'
+  - name: poolName
     type: string
-    default: 'frontend-dev:66053412-52484'
+  - name: baseServiceConnection
+    type: string
+  - name: baseAcrLoginServer
+    type: string
+  - name: trivyImage
+    type: string
+  - name: severity
+    type: string
+    default: 'CRITICAL,HIGH'
   - name: exitCode
-    displayName: 'Fail on findings? (0 = report only, 1 = fail)'
     type: string
     default: '0'
 
-resources:
-  repositories:
-    - repository: deps
-      type: git
-      name: ITS21/bridge-api-mgmt-portal
-      ref: refs/heads/dependency
-
-variables:
-  - group: vg-qisp-bridge-dev
-  - name: trivyImage
-    value: 'qispnpacr01.azurecr.io/trivy-offline:0.69.3-2026-11-19'
-
 stages:
-  - template: templates/stage-dependency-scan.yml
-    parameters:
-      poolName: '$(poolName)'
-      baseServiceConnection: '$(baseServiceConnectionName)'
-      baseAcrLoginServer: '$(baseAcrLoginServer)'
-      trivyImage: '$(trivyImage)'
-      exitCode: '${{ parameters.exitCode }}'
-
-  - stage: ImageScan
-    displayName: 'Image Scan (Trivy)'
-    dependsOn: []
+  - stage: DependencyScan
+    displayName: 'Dependency Scan (Trivy)'
     jobs:
       - job: Trivy
-        displayName: 'Scan ${{ parameters.testImage }}'
+        displayName: 'Scan composer.lock'
         pool:
-          name: '$(poolName)'
+          name: '${{ parameters.poolName }}'
         steps:
-          - checkout: none
+          - checkout: deps
+            clean: true
+            fetchDepth: 1
+            path: deps
 
           - task: AzureCLI@2
-            displayName: 'Login to dev ACR'
+            displayName: 'Login to base Image ACR'
             inputs:
-              azureSubscription: '$(baseServiceConnectionName)'
+              azureSubscription: '${{ parameters.baseServiceConnection }}'
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
-                ACR=$(echo $(baseAcrLoginServer) | cut -d'.' -f1)
-                az acr login --name "$ACR"
+                set -e
+                BASE_ACR=$(echo ${{ parameters.baseAcrLoginServer }} | cut -d'.' -f1)
+                IMG=${{ parameters.trivyImage }}
+                REPO_TAG=${IMG#*/}
+                if ! az acr repository show --name "$BASE_ACR" --image "$REPO_TAG" > /dev/null 2>&1; then
+                  echo "Importing $REPO_TAG from Docker Hub"
+                  az acr import --name "$BASE_ACR" --source docker.io/applabimg/$REPO_TAG --image $REPO_TAG || az acr repository show --name "$BASE_ACR" --image "$REPO_TAG"
+                fi
+                az acr login --name "$BASE_ACR"
 
           - bash: |
               set -e
-              IMG=$(baseAcrLoginServer)/${{ parameters.testImage }}
-              docker pull $IMG
-              docker run --rm --network none -v /var/run/docker.sock:/var/run/docker.sock $(trivyImage) image --skip-db-update --offline-scan --skip-version-check --disable-telemetry --scanners vuln --severity CRITICAL,HIGH --exit-code ${{ parameters.exitCode }} $IMG
-            displayName: 'Trivy image scan'
+              OUT=$(Build.ArtifactStagingDirectory)/sca
+              mkdir -p $OUT
+              FLAGS="--skip-db-update --offline-scan --skip-version-check --disable-telemetry --scanners vuln"
+              docker run --rm --network none -v $(Agent.BuildDirectory)/deps:/src:ro -v $OUT:/out ${{ parameters.trivyImage }} fs $FLAGS --format sarif --output /out/trivy-deps.sarif /src
+              docker run --rm --network none -v $(Agent.BuildDirectory)/deps:/src:ro ${{ parameters.trivyImage }} fs $FLAGS --severity ${{ parameters.severity }} --exit-code ${{ parameters.exitCode }} /src
+            displayName: 'Trivy scan'
 
-          - bash: |
-              docker rmi $(baseAcrLoginServer)/${{ parameters.testImage }} || true
-            displayName: 'Remove scanned image'
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish SCA results'
             condition: always()
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)/sca'
+              ArtifactName: 'sca-sarif-results'
