@@ -1,23 +1,15 @@
-stages:
-  - stage: DependencyScan
-    displayName: 'Dependency Scan (Trivy)'
-    jobs:
-      - job: Trivy
-        displayName: 'Scan composer.lock'
-        pool:
-          name: '${{ parameters.poolName }}'
-        steps:
-          - checkout: deps
-            clean: true
-            fetchDepth: 1
-            path: deps
+          - bash: |
+              set -e
+              OUT=$(Build.ArtifactStagingDirectory)/sca
+              mkdir -p $OUT
+              FLAGS="--skip-db-update --offline-scan --skip-version-check --disable-telemetry --scanners vuln"
+              docker run --rm --network none -v $(Agent.BuildDirectory)/deps:/src:ro -v $OUT:/out ${{ parameters.trivyImage }} fs $FLAGS --format sarif --output /out/trivy-deps.sarif /src
+              docker run --rm --network none -v $(Agent.BuildDirectory)/deps:/src:ro ${{ parameters.trivyImage }} fs $FLAGS --severity ${{ parameters.severity }} --exit-code ${{ parameters.exitCode }} /src
+            displayName: 'Trivy scan'
 
-          - task: AzureCLI@2
-            displayName: 'Login to base Image ACR'
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish SCA results'
+            condition: always()
             inputs:
-              azureSubscription: '${{ parameters.baseServiceConnection }}'
-              scriptType: bash
-              scriptLocation: inlineScript
-              inlineScript: |
-                BASE_ACR=$(echo ${{ parameters.baseAcrLoginServer }} | cut -d'.' -f1)
-                az acr login --name "$BASE_ACR"
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)/sca'
+              ArtifactName: 'sca-sarif-results'
